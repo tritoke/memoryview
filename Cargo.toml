@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-iced = { version = "0.14.0", features = ["image", "advanced"] }
+iced = { git = "https://github.com/tritoke/iced.git", branch = "tritoke/slider-as-primitive", features = ["image", "advanced"] }
 memmap2 = "0.9.10"
+tracing = "0.1.44"
 tracing-subscriber = "0.3.22"

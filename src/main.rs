@@ -1,13 +1,14 @@
 use iced::{
     advanced::image::Handle,
-    widget::{button, column, image},
-    Element,
+    widget::{button, column, image, row, slider},
+    Element, Theme,
 };
 use memmap2::Mmap;
 use std::fs::File;
 
 fn main() {
     iced::application(boot, MemoryView::update, MemoryView::view)
+        .theme(Theme::KanagawaWave)
         .run()
         .unwrap();
 }
@@ -18,8 +19,6 @@ fn boot() -> MemoryView {
         std::process::exit(-1);
     };
 
-    dbg!(&path);
-
     let file = match File::open(&path) {
         Ok(file) => file,
         Err(e) => {
@@ -27,8 +26,6 @@ fn boot() -> MemoryView {
             std::process::exit(-1);
         }
     };
-
-    dbg!(&file);
 
     let maybe_map = unsafe { Mmap::map(&file) };
     let buf = match maybe_map {
@@ -38,8 +35,6 @@ fn boot() -> MemoryView {
             std::process::exit(-1);
         }
     };
-
-    dbg!(buf.len());
 
     MemoryView::new(buf)
 }
@@ -55,22 +50,41 @@ impl MemoryView {
     fn new(buf: Mmap) -> Self {
         Self {
             buf: Box::leak(Box::new(buf)),
-            width: 100,
-            height: 100,
+            width: 1920,
+            height: 1080,
             offset: 0,
         }
     }
 
     fn update(&mut self, message: Message) {
-        println!("update called: message = {message:?}");
+        dbg!(&message);
+        match message {
+            Message::OffsetChanged(offset) => self.offset = offset,
+            Message::WidthChanged(width) => self.width = width,
+            Message::HeightChanged(height) => self.height = height,
+        }
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let handle = Handle::from_rgba(self.width, self.height, &self.buf[self.offset..]);
+        let offset_slider = slider(0..=self.buf.len(), self.offset, Message::OffsetChanged);
+        let offset_controls = row!["offset:", offset_slider];
 
-        image(handle).into()
+        let width_slider = slider(0..=10000, self.width, Message::WidthChanged);
+        let width_controls = row!["width:", width_slider];
+
+        let height_slider = slider(0..=10000, self.height, Message::HeightChanged);
+        let height_controls = row!["height:", height_slider];
+
+        let controls = column![offset_controls, width_controls, height_controls];
+        let handle = Handle::from_rgba(self.width, self.height, &self.buf[self.offset..]);
+        column![controls, image(handle)].into()
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone)]
-enum Message {}
+enum Message {
+    OffsetChanged(usize),
+    WidthChanged(u32),
+    HeightChanged(u32),
+}
