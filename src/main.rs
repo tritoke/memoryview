@@ -1,6 +1,7 @@
 use iced::{
     advanced::image::Handle,
-    widget::{button, column, image, row, slider},
+    alignment::Vertical,
+    widget::{button, column, container, image, row, slider, text},
     Element, Theme,
 };
 use memmap2::Mmap;
@@ -66,16 +67,39 @@ impl MemoryView {
     }
 
     fn view(&self) -> Element<'_, Message> {
+        let label_width = 55;
+
+        let offset_label = text("offset:").width(label_width);
         let offset_slider = slider(0..=self.buf.len(), self.offset, Message::OffsetChanged);
-        let offset_controls = row!["offset:", offset_slider];
+        let offset_minus =
+            button("-").on_press(Message::OffsetChanged(self.offset.saturating_sub(1)));
+        let offset_value = text(self.offset);
+        let offset_plus =
+            button("+").on_press(Message::OffsetChanged(self.buf.len().min(self.offset + 1)));
+        let offset_controls = row![
+            offset_label,
+            offset_slider,
+            offset_minus,
+            offset_value,
+            offset_plus
+        ]
+        .spacing(5)
+        .align_y(Vertical::Center);
 
+        let width_label = text("width:").width(label_width);
         let width_slider = slider(0..=10000, self.width, Message::WidthChanged);
-        let width_controls = row!["width:", width_slider];
+        let width_controls = row![width_label, width_slider]
+            .spacing(5)
+            .align_y(Vertical::Center);
 
+        let height_label = text("height:").width(label_width);
         let height_slider = slider(0..=10000, self.height, Message::HeightChanged);
-        let height_controls = row!["height:", height_slider];
+        let height_controls = row![height_label, height_slider]
+            .spacing(5)
+            .align_y(Vertical::Center);
 
-        let controls = column![offset_controls, width_controls, height_controls];
+        let control_col = column![offset_controls, width_controls, height_controls].spacing(5);
+        let controls = container(control_col).padding(5);
         let handle = Handle::from_rgba(self.width, self.height, &self.buf[self.offset..]);
         column![controls, image(handle)].into()
     }
