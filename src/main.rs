@@ -1,11 +1,14 @@
 use iced::{
     advanced::image::Handle,
     alignment::Vertical,
-    widget::{button, column, container, image, row, slider, text},
+    widget::{button, column, container, image, row, slider, text, Row},
     Element, Theme,
 };
 use memmap2::Mmap;
-use std::fs::File;
+use std::{
+    fs::File,
+    ops::{Add, RangeInclusive, Sub},
+};
 
 fn main() {
     iced::application(boot, MemoryView::update, MemoryView::view)
@@ -67,36 +70,51 @@ impl MemoryView {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let label_width = 55;
+        fn controls<'a, T, Message>(
+            label_text: &'a str,
+            slider_range: RangeInclusive<T>,
+            value: T,
+            on_change: impl Fn(T) -> Message + 'a,
+        ) -> Row<'a, Message>
+        where
+            T: Copy
+                + Add
+                + Sub
+                + From<u8>
+                + PartialOrd
+                + iced::advanced::text::IntoFragment<'a>
+                + num_traits::AsPrimitive<f64>
+                + num_traits::FromPrimitive,
+            Message: Clone + 'a,
+        {
+            const LABEL_WIDTH: u32 = 55;
 
-        let offset_label = text("offset:").width(label_width);
-        let offset_slider = slider(0..=self.buf.len(), self.offset, Message::OffsetChanged);
-        let offset_minus =
-            button("-").on_press(Message::OffsetChanged(self.offset.saturating_sub(1)));
-        let offset_value = text(self.offset);
-        let offset_plus =
-            button("+").on_press(Message::OffsetChanged(self.buf.len().min(self.offset + 1)));
-        let offset_controls = row![
-            offset_label,
-            offset_slider,
-            offset_minus,
-            offset_value,
-            offset_plus
-        ]
-        .spacing(5)
-        .align_y(Vertical::Center);
+            let label = text(label_text).width(LABEL_WIDTH);
+            let slider = slider(slider_range, value, on_change);
+            // let offset_minus =
+            //     button("-").on_press(Message::OffsetChanged(self.offset.saturating_sub(1)));
+            let value = text(value);
+            // let offset_plus = button("+").on_press($crate::Message::OffsetChanged(
+            //     self.buf.len().min(self.offset + 1),
+            // ));
 
-        let width_label = text("width:").width(label_width);
-        let width_slider = slider(0..=10000, self.width, Message::WidthChanged);
-        let width_controls = row![width_label, width_slider]
+            row![
+                label, slider, // minus,
+                value,
+                // plus
+            ]
             .spacing(5)
-            .align_y(Vertical::Center);
+            .align_y(Vertical::Center)
+        }
 
-        let height_label = text("height:").width(label_width);
-        let height_slider = slider(0..=10000, self.height, Message::HeightChanged);
-        let height_controls = row![height_label, height_slider]
-            .spacing(5)
-            .align_y(Vertical::Center);
+        let offset_controls = controls(
+            "offset:",
+            0..=self.buf.len(),
+            self.offset,
+            Message::OffsetChanged,
+        );
+        let width_controls = controls("width:", 0..=10000, self.width, Message::WidthChanged);
+        let height_controls = controls("height:", 0..=10000, self.height, Message::HeightChanged);
 
         let control_col = column![offset_controls, width_controls, height_controls].spacing(5);
         let controls = container(control_col).padding(5);

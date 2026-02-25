@@ -1844,6 +1844,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "memmap2",
+ "num-traits",
  "tracing",
  "tracing-subscriber",
 ]
