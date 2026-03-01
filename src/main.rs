@@ -1,13 +1,15 @@
 use iced::{
+    Color, Element, Font, Padding, Task, Theme,
     advanced::{graphics::core::font, image::Handle},
     alignment::{Horizontal, Vertical},
     widget::{
-        button, column, container, container::background, image, rich_text, row, slider, span,
-        text, text_input, Row,
+        Row, button, column, combo_box, container, image, rich_text, row, slider, span, text,
+        text_input,
     },
-    Color, Element, Font, Padding, Theme,
 };
 use memmap2::Mmap;
+use strum::{EnumIter, IntoEnumIterator};
+
 use std::{
     fs::File,
     ops::{Add, RangeInclusive, Sub},
@@ -53,22 +55,29 @@ struct MemoryView {
     width: u32,
     height: u32,
     offset: usize,
+    pixel_format: PixelFormat,
+    pixel_format_state: combo_box::State<PixelFormat>,
 }
 
 impl MemoryView {
-    fn update(&mut self, message: Message) {
+    fn update(&mut self, message: Message) -> Task<Message> {
         tracing::debug!("{message:?}");
 
         match message {
             Message::OffsetChanged(offset) => self.offset = offset,
             Message::WidthChanged(width) => self.width = width,
             Message::HeightChanged(height) => self.height = height,
+            Message::FormatChanged(format) => self.pixel_format = format,
         }
 
         self.clamp_values();
+
+        Task::none()
     }
 
     fn view(&self) -> Element<'_, Message> {
+        const LABEL_WIDTH: u32 = 53;
+
         fn controls<'a, T>(
             label_text: &'a str,
             slider_range: RangeInclusive<T>,
@@ -89,8 +98,6 @@ impl MemoryView {
             <T as std::str::FromStr>::Err: std::fmt::Debug,
             Message: Clone + 'a,
         {
-            const LABEL_WIDTH: u32 = 55;
-
             let label = text(label_text).width(LABEL_WIDTH);
             let slider = slider(slider_range.clone(), value, on_change);
 
@@ -169,11 +176,30 @@ impl MemoryView {
             ..Padding::default()
         });
 
-        let control_col = column![offset_controls, width_controls, height_controls].spacing(5);
-        let controls: Element<_> = container(control_col).padding(5).into();
-        let handle = Handle::from_rgba(self.width, self.height, &self.buf[self.offset..]);
-        let img = container(image(handle)).style(|_| background(Color::BLACK));
-        column![controls, img].into()
+        let format_combo = combo_box(
+            &self.pixel_format_state,
+            "",
+            Some(&self.pixel_format),
+            Message::FormatChanged,
+        )
+        .width(300);
+
+        let format_controls = row![text("format").width(LABEL_WIDTH), format_combo]
+            .spacing(5)
+            .align_y(Vertical::Center);
+
+        let control_col = column![
+            offset_controls,
+            width_controls,
+            height_controls,
+            format_controls
+        ]
+        .spacing(5)
+        .padding(5);
+
+        let img = container(image(self.image_handle()))
+            .style(|_| iced::widget::container::background(Color::BLACK));
+        column![control_col, img].into()
     }
 }
 
@@ -184,13 +210,23 @@ impl MemoryView {
             width: 1920,
             height: 1080,
             offset: 0,
+            pixel_format: PixelFormat::Rgba8,
+            pixel_format_state: combo_box::State::new(PixelFormat::iter().collect()),
+        }
+    }
+
+    fn image_handle(&self) -> Handle {
+        if self.pixel_format == PixelFormat::Rgba8 {
+            Handle::from_rgba(self.width, self.height, &self.buf[self.offset..])
+        } else {
+            todo!("Implement other formats innit")
         }
     }
 
     fn image_size_bytes(&self) -> usize {
         (self.width as usize)
             .saturating_mul(self.height as usize)
-            .saturating_mul(4) // TODO: change when the pixel format changes
+            .saturating_mul(self.pixel_format.size())
     }
 
     fn offset_max(&self) -> usize {
@@ -235,6 +271,7 @@ enum Message {
     OffsetChanged(usize),
     WidthChanged(u32),
     HeightChanged(u32),
+    FormatChanged(PixelFormat),
 }
 
 fn square_bold_text(text: &str) -> Element<'_, Message> {
@@ -248,4 +285,28 @@ fn square_bold_text(text: &str) -> Element<'_, Message> {
     .align_y(Vertical::Center)
     .on_link_click(iced::never)
     .into()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter)]
+enum PixelFormat {
+    Rgb8,
+    Rgba8,
+}
+
+impl PixelFormat {
+    fn size(&self) -> usize {
+        match self {
+            Self::Rgb8 => 3,
+            Self::Rgba8 => 4,
+        }
+    }
+}
+
+impl std::fmt::Display for PixelFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PixelFormat::Rgb8 => "RGB 8-bit",
+            PixelFormat::Rgba8 => "RGBA 8-bit",
+        })
+    }
 }
