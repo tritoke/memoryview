@@ -1,8 +1,11 @@
 use iced::{
-    advanced::image::Handle,
-    alignment::Vertical,
-    widget::{button, column, container, image, row, slider, text, Row},
-    Color, Element, Theme,
+    advanced::{graphics::core::font, image::Handle},
+    alignment::{Horizontal, Vertical},
+    widget::{
+        button, column, container, container::background, image, rich_text, row, slider, span,
+        text, text_input, Row,
+    },
+    Color, Element, Font, Padding, Theme,
 };
 use memmap2::Mmap;
 use std::{
@@ -66,7 +69,7 @@ impl MemoryView {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        fn controls<'a, T, Message>(
+        fn controls<'a, T>(
             label_text: &'a str,
             slider_range: RangeInclusive<T>,
             value: T,
@@ -80,7 +83,10 @@ impl MemoryView {
                 + PartialOrd
                 + iced::advanced::text::IntoFragment<'a>
                 + num_traits::AsPrimitive<f64>
-                + num_traits::FromPrimitive,
+                + num_traits::FromPrimitive
+                + std::fmt::Display
+                + std::str::FromStr,
+            <T as std::str::FromStr>::Err: std::fmt::Debug,
             Message: Clone + 'a,
         {
             const LABEL_WIDTH: u32 = 55;
@@ -88,45 +94,86 @@ impl MemoryView {
             let label = text(label_text).width(LABEL_WIDTH);
             let slider = slider(slider_range.clone(), value, on_change);
 
-            // TODO: Use icons here
-            let mut minus = button(text("-").width(15));
+            let mut minus = button(square_bold_text("-"));
             if &value > slider_range.start() {
                 minus = minus.on_press(on_change(value - 1.into()));
             }
-            let value_text = text(value);
-            let mut plus = button("+");
+
+            let value_str = format!("{value}");
+            let value_text_input = text_input("", &value_str)
+                .on_input(move |s| {
+                    let new_value = match s.parse() {
+                        Ok(new_value) => new_value,
+                        Err(e) => {
+                            tracing::debug!("Failed to parse input: {e:?}");
+                            value
+                        }
+                    };
+                    on_change(new_value)
+                })
+                .width(130);
+
+            let mut plus = button(square_bold_text("+"));
             if &value < slider_range.end() {
                 plus = plus.on_press(on_change(value + 1.into()));
             }
 
-            row![label, slider, minus, value_text, plus]
+            row![label, slider, minus, value_text_input, plus]
                 .spacing(5)
                 .align_y(Vertical::Center)
         }
 
-        let offset_controls = controls(
-            "offset:",
+        let mut offset_controls = controls(
+            "offset",
             self.offset_range(),
             self.offset,
             Message::OffsetChanged,
         );
+
+        let mut skip_left_button = button(square_bold_text("<"));
+        if self.offset != 0 {
+            skip_left_button = skip_left_button.on_press(Message::OffsetChanged(
+                self.offset.saturating_sub(self.image_size_bytes()),
+            ));
+        }
+
+        let mut skip_right_button = button(square_bold_text(">"));
+        if self.offset != self.offset_max() {
+            skip_right_button = skip_right_button.on_press(Message::OffsetChanged(
+                self.offset.saturating_add(self.image_size_bytes()),
+            ));
+        }
+
+        offset_controls = offset_controls
+            .push(skip_left_button)
+            .push(skip_right_button);
+
         let width_controls = controls(
-            "width:",
+            "width",
             self.width_range(),
             self.width,
             Message::WidthChanged,
-        );
+        )
+        .padding(Padding {
+            right: 80.0,
+            ..Padding::default()
+        });
         let height_controls = controls(
-            "height:",
+            "height",
             self.height_range(),
             self.height,
             Message::HeightChanged,
-        );
+        )
+        .padding(Padding {
+            right: 80.0,
+            ..Padding::default()
+        });
 
         let control_col = column![offset_controls, width_controls, height_controls].spacing(5);
         let controls: Element<_> = container(control_col).padding(5).into();
         let handle = Handle::from_rgba(self.width, self.height, &self.buf[self.offset..]);
-        column![controls.explain(Color::WHITE), image(handle)].into()
+        let img = container(image(handle)).style(|_| background(Color::BLACK));
+        column![controls, img].into()
     }
 }
 
@@ -140,11 +187,14 @@ impl MemoryView {
         }
     }
 
-    fn offset_max(&self) -> usize {
-        let image_size_bytes = (self.width as usize)
+    fn image_size_bytes(&self) -> usize {
+        (self.width as usize)
             .saturating_mul(self.height as usize)
-            .saturating_mul(4); // TODO: change when the pixel format changes
-        self.buf.len().saturating_sub(image_size_bytes)
+            .saturating_mul(4) // TODO: change when the pixel format changes
+    }
+
+    fn offset_max(&self) -> usize {
+        self.buf.len().saturating_sub(self.image_size_bytes())
     }
 
     fn offset_range(&self) -> RangeInclusive<usize> {
@@ -185,4 +235,17 @@ enum Message {
     OffsetChanged(usize),
     WidthChanged(u32),
     HeightChanged(u32),
+}
+
+fn square_bold_text(text: &str) -> Element<'_, Message> {
+    rich_text!(span(text).font(Font {
+        weight: font::Weight::Bold,
+        ..Font::default()
+    }))
+    .size(20)
+    .width(15)
+    .align_x(Horizontal::Center)
+    .align_y(Vertical::Center)
+    .on_link_click(iced::never)
+    .into()
 }
