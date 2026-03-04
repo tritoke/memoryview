@@ -1,12 +1,10 @@
 use iced::{
-    Color, Element, Font, Padding, Task, Theme,
-    advanced::{graphics::core::font, image::Handle},
-    alignment::{Horizontal, Vertical},
-    widget::{
-        Row, button, column, combo_box, container, image, rich_text, row, slider, span, text,
-        text_input,
-    },
+    Color, Element, Padding, Subscription, Task, Theme,
+    advanced::image::Handle,
+    alignment::Vertical,
+    widget::{Row, button, column, combo_box, container, image, row, slider, text, text_input},
 };
+use lucide_icons::Icon;
 use memmap2::Mmap;
 use strum::{EnumIter, IntoEnumIterator};
 
@@ -18,8 +16,16 @@ use std::{
 fn main() {
     tracing_subscriber::fmt::init();
 
+    let settings = iced::Settings {
+        // add bundled font to iced
+        fonts: vec![lucide_icons::LUCIDE_FONT_BYTES.into()],
+        ..Default::default()
+    };
+
     iced::application(boot, MemoryView::update, MemoryView::view)
+        .settings(settings)
         .theme(Theme::Oxocarbon)
+        .subscription(MemoryView::subscription)
         .run()
         .unwrap();
 }
@@ -75,6 +81,10 @@ impl MemoryView {
         Task::none()
     }
 
+    fn subscription(&self) -> Subscription<Message> {
+        Subscription::none()
+    }
+
     fn view(&self) -> Element<'_, Message> {
         const LABEL_WIDTH: u32 = 53;
 
@@ -101,7 +111,7 @@ impl MemoryView {
             let label = text(label_text).width(LABEL_WIDTH);
             let slider = slider(slider_range.clone(), value, on_change);
 
-            let mut minus = button(square_bold_text("-"));
+            let mut minus = button(icon(Icon::Minus));
             if &value > slider_range.start() {
                 minus = minus.on_press(on_change(value - 1.into()));
             }
@@ -120,7 +130,7 @@ impl MemoryView {
                 })
                 .width(130);
 
-            let mut plus = button(square_bold_text("+"));
+            let mut plus = button(icon(Icon::Plus));
             if &value < slider_range.end() {
                 plus = plus.on_press(on_change(value + 1.into()));
             }
@@ -137,14 +147,14 @@ impl MemoryView {
             Message::OffsetChanged,
         );
 
-        let mut skip_left_button = button(square_bold_text("<"));
+        let mut skip_left_button = button(icon(Icon::ChevronLeft));
         if self.offset != 0 {
             skip_left_button = skip_left_button.on_press(Message::OffsetChanged(
                 self.offset.saturating_sub(self.image_size_bytes()),
             ));
         }
 
-        let mut skip_right_button = button(square_bold_text(">"));
+        let mut skip_right_button = button(icon(Icon::ChevronRight));
         if self.offset != self.offset_max() {
             skip_right_button = skip_right_button.on_press(Message::OffsetChanged(
                 self.offset.saturating_add(self.image_size_bytes()),
@@ -274,19 +284,6 @@ enum Message {
     FormatChanged(PixelFormat),
 }
 
-fn square_bold_text(text: &str) -> Element<'_, Message> {
-    rich_text!(span(text).font(Font {
-        weight: font::Weight::Bold,
-        ..Font::default()
-    }))
-    .size(20)
-    .width(15)
-    .align_x(Horizontal::Center)
-    .align_y(Vertical::Center)
-    .on_link_click(iced::never)
-    .into()
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter)]
 enum PixelFormat {
     Rgb8,
@@ -309,4 +306,8 @@ impl std::fmt::Display for PixelFormat {
             PixelFormat::Rgba8 => "RGBA 8-bit",
         })
     }
+}
+
+fn icon<'a>(icon: Icon) -> iced::widget::Text<'a> {
+    iced::widget::text(char::from(icon).to_string()).font(iced::Font::with_name("lucide"))
 }

@@ -134,7 +134,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -1840,6 +1840,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
 
 [[package]]
+name = "lucide-icons"
+version = "0.575.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fe5ef57a7e2a313b5d15a2fe306a44acfe290247d5ff46af1780d1250b716fe"
+
+[[package]]
 name = "malloc_buf"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1887,6 +1893,7 @@ name = "memoryview"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "lucide-icons",
  "memmap2",
  "num-traits",
  "strum",
