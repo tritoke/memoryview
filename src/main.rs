@@ -2,6 +2,7 @@ use iced::{
     Color, Element, Padding, Subscription, Task, Theme,
     advanced::image::Handle,
     alignment::Vertical,
+    keyboard,
     widget::{Row, button, column, combo_box, container, image, row, slider, text, text_input},
 };
 use lucide_icons::Icon;
@@ -26,6 +27,7 @@ fn main() {
         .settings(settings)
         .theme(Theme::Oxocarbon)
         .subscription(MemoryView::subscription)
+        .scale_factor(MemoryView::scale_factor)
         .run()
         .unwrap();
 }
@@ -63,6 +65,7 @@ struct MemoryView {
     offset: usize,
     pixel_format: PixelFormat,
     pixel_format_state: combo_box::State<PixelFormat>,
+    scale_factor: f32,
 }
 
 impl MemoryView {
@@ -74,6 +77,9 @@ impl MemoryView {
             Message::WidthChanged(width) => self.width = width,
             Message::HeightChanged(height) => self.height = height,
             Message::FormatChanged(format) => self.pixel_format = format,
+            Message::ScaleDecrease => self.scale_factor *= 0.8,
+            Message::ScaleIncrease => self.scale_factor *= 1.25,
+            Message::ScaleReset => self.scale_factor = 1.0,
         }
 
         self.clamp_values();
@@ -82,7 +88,31 @@ impl MemoryView {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::none()
+        keyboard::listen().filter_map(|e| {
+            let keyboard::Event::KeyPressed {
+                key: keyboard::key::Key::Character(c),
+                modifiers,
+                ..
+            } = e
+            else {
+                return None;
+            };
+
+            if !modifiers.control() {
+                return None;
+            }
+
+            match c.as_str() {
+                "-" | "_" => Some(Message::ScaleDecrease),
+                "=" | "+" => Some(Message::ScaleIncrease),
+                "0" | ")" => Some(Message::ScaleReset),
+                _ => None,
+            }
+        })
+    }
+
+    fn scale_factor(&self) -> f32 {
+        self.scale_factor
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -222,6 +252,7 @@ impl MemoryView {
             offset: 0,
             pixel_format: PixelFormat::Rgba8,
             pixel_format_state: combo_box::State::new(PixelFormat::iter().collect()),
+            scale_factor: 1.0,
         }
     }
 
@@ -282,6 +313,9 @@ enum Message {
     WidthChanged(u32),
     HeightChanged(u32),
     FormatChanged(PixelFormat),
+    ScaleIncrease,
+    ScaleDecrease,
+    ScaleReset,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter)]
