@@ -1,7 +1,7 @@
 use iced::{
-    Color, Element, Padding, Subscription, Task, Theme,
-    advanced::image::Handle,
-    alignment::Vertical,
+    Color, Element, Function, Padding, Subscription, Task, Theme,
+    advanced::{graphics::core::Bytes, image::Handle},
+    alignment::{Horizontal, Vertical},
     keyboard,
     widget::{Row, button, column, combo_box, container, image, row, slider, text, text_input},
 };
@@ -12,6 +12,7 @@ use strum::{EnumIter, IntoEnumIterator};
 use std::{
     fs::File,
     ops::{Add, RangeInclusive, Sub},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 fn main() {
@@ -55,8 +56,11 @@ fn boot() -> MemoryView {
         }
     };
 
+    // TODO: spawn task to generate the first image!
     MemoryView::new(buf)
 }
+
+static HANDLE_NO: AtomicU64 = AtomicU64::new(0);
 
 struct MemoryView {
     buf: &'static Mmap,
@@ -66,11 +70,16 @@ struct MemoryView {
     pixel_format: PixelFormat,
     pixel_format_state: combo_box::State<PixelFormat>,
     scale_factor: f32,
+    view: Option<image::Allocation>,
+    view_no: u64,
+    // FEAT: hold handles to close?
 }
 
 impl MemoryView {
     fn update(&mut self, message: Message) -> Task<Message> {
         tracing::debug!("{message:?}");
+
+        let needs_regen = message.invalidates_image();
 
         match message {
             Message::OffsetChanged(offset) => self.offset = offset,
@@ -80,11 +89,23 @@ impl MemoryView {
             Message::ScaleDecrease => self.scale_factor *= 0.8,
             Message::ScaleIncrease => self.scale_factor *= 1.25,
             Message::ScaleReset => self.scale_factor = 1.0,
+            Message::NewImage(view_no, Ok(allocation)) => {
+                if view_no > self.view_no {
+                    self.view = Some(allocation);
+                }
+            }
+            Message::NewImage(_, Err(e)) => {
+                tracing::error!("Failed generating new image: {e}");
+            }
         }
 
         self.clamp_values();
 
-        Task::none()
+        if needs_regen {
+            self.regen_image()
+        } else {
+            Task::none()
+        }
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -136,7 +157,7 @@ impl MemoryView {
                 + std::fmt::Display
                 + std::str::FromStr,
             <T as std::str::FromStr>::Err: std::fmt::Debug,
-            Message: Clone + 'a,
+            Message: Clone,
         {
             let label = text(label_text).width(LABEL_WIDTH);
             let slider = slider(slider_range.clone(), value, on_change);
@@ -168,6 +189,7 @@ impl MemoryView {
             row![label, slider, minus, value_text_input, plus]
                 .spacing(5)
                 .align_y(Vertical::Center)
+                .into()
         }
 
         let mut offset_controls = controls(
@@ -237,30 +259,35 @@ impl MemoryView {
         .spacing(5)
         .padding(5);
 
-        let img = container(image(self.image_handle()))
-            .style(|_| iced::widget::container::background(Color::BLACK));
-        column![control_col, img].into()
+        let mut elems = column![control_col];
+
+        if let Some(allocation) = &self.view {
+            let img = container(image(allocation.handle()))
+                .style(|_| iced::widget::container::background(Color::BLACK));
+
+            elems = elems.push(img);
+        }
+
+        elems.into()
     }
 }
 
 impl MemoryView {
     fn new(buf: Mmap) -> Self {
+        let width = 1920;
+        let height = 1080;
+        let buf = Box::leak(Box::new(buf));
+
         Self {
-            buf: Box::leak(Box::new(buf)),
-            width: 1920,
-            height: 1080,
+            buf,
+            width,
+            height,
             offset: 0,
             pixel_format: PixelFormat::Rgba8,
             pixel_format_state: combo_box::State::new(PixelFormat::iter().collect()),
+            view_no: 0,
+            view: None,
             scale_factor: 1.0,
-        }
-    }
-
-    fn image_handle(&self) -> Handle {
-        if self.pixel_format == PixelFormat::Rgba8 {
-            Handle::from_rgba(self.width, self.height, &self.buf[self.offset..])
-        } else {
-            todo!("Implement other formats innit")
         }
     }
 
@@ -304,6 +331,32 @@ impl MemoryView {
             self.height = 1;
         }
     }
+
+    async fn generate_new_image_handle(buf: &'static [u8], params: HandleGenParams) -> Handle {
+        let rgba_bytes = match params.format {
+            PixelFormat::Rgb8 => {
+                let mut bytes = vec![0xFF; params.width as usize * params.height as usize * 4];
+
+                Bytes::from_owner(bytes)
+            }
+            PixelFormat::Rgba8 => Bytes::from_static(&buf[params.offset..]),
+        };
+
+        Handle::from_rgba(params.width, params.height, rgba_bytes)
+    }
+
+    fn regen_image(&self) -> Task<Message> {
+        let params = HandleGenParams {
+            width: self.width,
+            height: self.height,
+            offset: self.offset,
+            format: self.pixel_format,
+        };
+
+        Task::future(Self::generate_new_image_handle(&self.buf[..], params))
+            .then(image::allocate)
+            .map(Message::NewImage.with(HANDLE_NO.fetch_add(1, Ordering::Relaxed)))
+    }
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -316,6 +369,19 @@ enum Message {
     ScaleIncrease,
     ScaleDecrease,
     ScaleReset,
+    NewImage(u64, Result<image::Allocation, image::Error>),
+}
+
+impl Message {
+    fn invalidates_image(&self) -> bool {
+        matches!(
+            self,
+            Self::WidthChanged(_)
+                | Self::HeightChanged(_)
+                | Self::FormatChanged(_)
+                | Self::OffsetChanged(_)
+        )
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter)]
@@ -344,4 +410,12 @@ impl std::fmt::Display for PixelFormat {
 
 fn icon<'a>(icon: Icon) -> iced::widget::Text<'a> {
     iced::widget::text(char::from(icon).to_string()).font(iced::Font::with_name("lucide"))
+}
+
+#[derive(Copy, Clone, Debug)]
+struct HandleGenParams {
+    offset: usize,
+    width: u32,
+    height: u32,
+    format: PixelFormat,
 }
