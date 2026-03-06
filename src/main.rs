@@ -1,7 +1,7 @@
 use iced::{
     Color, Element, Function, Padding, Subscription, Task, Theme,
     advanced::{graphics::core::Bytes, image::Handle},
-    alignment::{Horizontal, Vertical},
+    alignment::Vertical,
     keyboard,
     widget::{Row, button, column, combo_box, container, image, row, slider, text, text_input},
 };
@@ -33,7 +33,7 @@ fn main() {
         .unwrap();
 }
 
-fn boot() -> MemoryView {
+fn boot() -> (MemoryView, Task<Message>) {
     let Some(path) = std::env::args_os().nth(1) else {
         eprintln!("Usage: ./{} <image>", std::env::args().next().unwrap());
         std::process::exit(-1);
@@ -56,11 +56,12 @@ fn boot() -> MemoryView {
         }
     };
 
-    // TODO: spawn task to generate the first image!
-    MemoryView::new(buf)
+    let state = MemoryView::new(buf);
+    let regen_image_task = state.regen_image();
+    (state, regen_image_task)
 }
 
-static HANDLE_NO: AtomicU64 = AtomicU64::new(0);
+static HANDLE_NO: AtomicU64 = AtomicU64::new(1);
 
 struct MemoryView {
     buf: &'static Mmap,
@@ -261,6 +262,7 @@ impl MemoryView {
 
         let mut elems = column![control_col];
 
+        tracing::debug!("self.view = {:?}", self.view);
         if let Some(allocation) = &self.view {
             let img = container(image(allocation.handle()))
                 .style(|_| iced::widget::container::background(Color::BLACK));
