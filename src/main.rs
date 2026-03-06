@@ -1,9 +1,12 @@
+use ::image as img;
 use iced::{
     Color, Element, Function, Padding, Subscription, Task, Theme,
     advanced::{graphics::core::Bytes, image::Handle},
     alignment::Vertical,
     keyboard,
-    widget::{Row, button, column, combo_box, container, image, row, slider, text, text_input},
+    widget::{
+        Row, button, column, combo_box, container, image, right, row, slider, text, text_input,
+    },
 };
 use lucide_icons::Icon;
 use memmap2::Mmap;
@@ -95,8 +98,22 @@ impl MemoryView {
                     self.view = Some(allocation);
                 }
             }
+            Message::SaveImage => {
+                return self.save_image();
+            }
+            Message::SaveImageResult(Ok(())) => {
+                tracing::debug!("Successfully saved image");
+                // TODO: show a toast to say the file was saved
+                return Task::none();
+            }
             Message::NewImage(_, Err(e)) => {
                 tracing::error!("Failed generating new image: {e}");
+                // TODO: maybe show a toast to say we fucked it?
+                return Task::none();
+            }
+            Message::SaveImageResult(Err(e)) => {
+                tracing::error!("Failed saving image: {e}");
+                // TODO: show a toast to say we fucked it
             }
         }
 
@@ -247,9 +264,18 @@ impl MemoryView {
         )
         .width(300);
 
-        let format_controls = row![text("format").width(LABEL_WIDTH), format_combo]
-            .spacing(5)
-            .align_y(Vertical::Center);
+        let mut save_button = button("save");
+        if self.view.is_some() {
+            save_button = save_button.on_press(Message::SaveImage);
+        }
+
+        let format_controls = row![
+            text("format").width(LABEL_WIDTH),
+            format_combo,
+            right(save_button)
+        ]
+        .spacing(5)
+        .align_y(Vertical::Center);
 
         let control_col = column![
             offset_controls,
@@ -262,7 +288,6 @@ impl MemoryView {
 
         let mut elems = column![control_col];
 
-        tracing::debug!("self.view = {:?}", self.view);
         if let Some(allocation) = &self.view {
             let img = container(image(allocation.handle()))
                 .style(|_| iced::widget::container::background(Color::BLACK));
@@ -285,7 +310,7 @@ impl MemoryView {
             width,
             height,
             offset: 0,
-            pixel_format: PixelFormat::Rgba8,
+            pixel_format: PixelFormat::Rgb8,
             pixel_format_state: combo_box::State::new(PixelFormat::iter().collect()),
             view_no: 0,
             view: None,
@@ -337,9 +362,14 @@ impl MemoryView {
     async fn generate_new_image_handle(buf: &'static [u8], params: HandleGenParams) -> Handle {
         let rgba_bytes = match params.format {
             PixelFormat::Rgb8 => {
-                let mut bytes = vec![0xFF; params.width as usize * params.height as usize * 4];
+                let mut rgba = vec![0xFF; params.width as usize * params.height as usize * 4];
 
-                Bytes::from_owner(bytes)
+                for i in (0..params.width as usize * params.height as usize).step_by(3) {
+                    rgba[i * 4..i * 4 + 3]
+                        .copy_from_slice(&buf[params.offset + i * 3..params.offset + i * 3 + 3]);
+                }
+
+                Bytes::from_owner(rgba)
             }
             PixelFormat::Rgba8 => Bytes::from_static(&buf[params.offset..]),
         };
@@ -359,6 +389,43 @@ impl MemoryView {
             .then(image::allocate)
             .map(Message::NewImage.with(HANDLE_NO.fetch_add(1, Ordering::Relaxed)))
     }
+
+    fn save_image(&self) -> Task<Message> {
+        let Some(allocation) = &self.view else {
+            return Task::none();
+        };
+
+        let Handle::Rgba {
+            width,
+            height,
+            pixels,
+            ..
+        } = allocation.handle().clone()
+        else {
+            unreachable!("non rgba handle???")
+        };
+
+        tracing::debug!("[save_image] Before Task::perform");
+        Task::perform(save_image(pixels, width, height), Message::SaveImageResult)
+    }
+}
+
+async fn save_image(pixels: Bytes, width: u32, height: u32) -> Result<(), String> {
+    tracing::debug!("[save_image] In future!");
+    tokio::task::spawn_blocking(move || {
+        let res = img::save_buffer(
+            "image.png",
+            &pixels[..],
+            width,
+            height,
+            img::ColorType::Rgba8,
+        )
+        .map_err(|e| e.to_string());
+        tracing::debug!("[save_image] res = {res:?}");
+        res
+    })
+    .await
+    .expect("Failed to await blocking task")
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -372,6 +439,8 @@ enum Message {
     ScaleDecrease,
     ScaleReset,
     NewImage(u64, Result<image::Allocation, image::Error>),
+    SaveImage,
+    SaveImageResult(Result<(), String>),
 }
 
 impl Message {

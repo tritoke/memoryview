@@ -1449,6 +1449,7 @@ dependencies = [
  "iced_core",
  "log",
  "rustc-hash 2.1.1",
+ "tokio",
  "wasm-bindgen-futures",
  "wasmtimer",
 ]
@@ -1893,10 +1894,12 @@ name = "memoryview"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "image",
  "lucide-icons",
  "memmap2",
  "num-traits",
  "strum",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
