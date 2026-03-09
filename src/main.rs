@@ -372,11 +372,13 @@ impl MemoryView {
     fn generate_new_image_handle(buf: &'static [u8], params: HandleGenParams) -> Handle {
         let rgba_bytes = match params.format {
             PixelFormat::Rgb8 => {
-                let mut rgba = vec![0xFF; params.width as usize * params.height as usize * 4];
+                let mut rgba = vec![0; params.width as usize * params.height as usize * 4];
 
-                for i in 0..params.width as usize * params.height as usize {
-                    rgba[i * 4..i * 4 + 3]
-                        .copy_from_slice(&buf[params.offset + i * 3..params.offset + i * 3 + 3]);
+                let (rgba_pixels, _) = rgba.as_chunks_mut::<4>();
+                let (rgb_pixels, _) = buf[params.offset..].as_chunks::<3>();
+
+                for (rgba, &[r, g, b]) in rgba_pixels.iter_mut().zip(rgb_pixels) {
+                    *rgba = [r, g, b, 0xFF];
                 }
 
                 Bytes::from_owner(rgba)
