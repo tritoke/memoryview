@@ -10,11 +10,14 @@ use iced::{
 };
 use lucide_icons::Icon;
 use memmap2::Mmap;
+use rounded_div::RoundedDiv;
 use strum::{EnumIter, IntoEnumIterator};
 
 use std::{
     collections::BTreeMap,
     fs::File,
+    hint::unreachable_unchecked,
+    mem,
     ops::{Add, RangeInclusive, Sub},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -286,6 +289,9 @@ impl MemoryView {
         .spacing(5)
         .align_y(Vertical::Center);
 
+        // TODO: Add endianness control for >8 bit formats
+        // TODO: Add data type controls, i.e. signed, unsigned, float
+
         let control_col = column![
             offset_controls,
             width_controls,
@@ -369,24 +375,113 @@ impl MemoryView {
         }
     }
 
+    // TODO: add tests for pixel format conversions matched against GIMP
     fn generate_new_image_handle(buf: &'static [u8], params: HandleGenParams) -> Handle {
-        let rgba_bytes = match params.format {
-            PixelFormat::Rgb8 => {
-                let mut rgba = vec![0; params.width as usize * params.height as usize * 4];
+        // early return for the non-allocating case
+        if params.format == PixelFormat::Rgba8 {
+            return Handle::from_rgba(
+                params.width,
+                params.height,
+                Bytes::from_static(&buf[params.offset..]),
+            );
+        }
 
-                let (rgba_pixels, _) = rgba.as_chunks_mut::<4>();
+        let mut rgba = vec![0; params.width as usize * params.height as usize * 4];
+        let (rgba_pixels, _) = rgba.as_chunks_mut::<4>();
+        match params.format {
+            PixelFormat::Rgb8 => {
                 let (rgb_pixels, _) = buf[params.offset..].as_chunks::<3>();
 
                 for (rgba, &[r, g, b]) in rgba_pixels.iter_mut().zip(rgb_pixels) {
                     *rgba = [r, g, b, 0xFF];
                 }
-
-                Bytes::from_owner(rgba)
             }
-            PixelFormat::Rgba8 => Bytes::from_static(&buf[params.offset..]),
+            PixelFormat::Rgb16 => {
+                let (rgb_pixels, _) = buf[params.offset..].as_chunks::<6>();
+
+                for (rgba, &data) in rgba_pixels.iter_mut().zip(rgb_pixels) {
+                    // safety: don't worry about ittttt
+                    let [rw, gw, bw] = unsafe { mem::transmute::<[u8; 6], [u16; 3]>(data) };
+
+                    let r = rw.rounded_div(0x100) as u8;
+                    let g = gw.rounded_div(0x100) as u8;
+                    let b = bw.rounded_div(0x100) as u8;
+                    *rgba = [r, g, b, 0xFF];
+                }
+            }
+            PixelFormat::Rgb32 => {
+                let (rgb_pixels, _) = buf[params.offset..].as_chunks::<12>();
+
+                for (rgba, &data) in rgba_pixels.iter_mut().zip(rgb_pixels) {
+                    // safety: don't worry about ittttt
+                    let [rw, gw, bw] = unsafe { mem::transmute::<[u8; 12], [u32; 3]>(data) };
+
+                    let r = rw.rounded_div(0x1_000_000) as u8;
+                    let g = gw.rounded_div(0x1_000_000) as u8;
+                    let b = bw.rounded_div(0x1_000_000) as u8;
+                    *rgba = [r, g, b, 0xFF];
+                }
+            }
+            PixelFormat::Rgba16 => {
+                let (rgba_in_pixels, _) = buf[params.offset..].as_chunks::<8>();
+
+                for (rgba, &data) in rgba_pixels.iter_mut().zip(rgba_in_pixels) {
+                    // safety: don't worry about ittttt
+                    let [rw, gw, bw, aw] = unsafe { mem::transmute::<[u8; 8], [u16; 4]>(data) };
+
+                    let r = rw.rounded_div(0x100) as u8;
+                    let g = gw.rounded_div(0x100) as u8;
+                    let b = bw.rounded_div(0x100) as u8;
+                    let a = aw.rounded_div(0x100) as u8;
+                    *rgba = [r, g, b, a];
+                }
+            }
+            PixelFormat::Rgba32 => {
+                let (rgba_in_pixels, _) = buf[params.offset..].as_chunks::<16>();
+
+                for (rgba, &data) in rgba_pixels.iter_mut().zip(rgba_in_pixels) {
+                    // safety: don't worry about ittttt
+                    let [rw, gw, bw, aw] = unsafe { mem::transmute::<[u8; 16], [u32; 4]>(data) };
+
+                    let r = rw.rounded_div(0x1_000_000) as u8;
+                    let g = gw.rounded_div(0x1_000_000) as u8;
+                    let b = bw.rounded_div(0x1_000_000) as u8;
+                    let a = aw.rounded_div(0x1_000_000) as u8;
+                    *rgba = [r, g, b, a];
+                }
+            }
+            PixelFormat::Rgb565 => {
+                let (rgb_in_pixels, _) = buf[params.offset..].as_chunks::<2>();
+
+                for (rgba, &data) in rgba_pixels.iter_mut().zip(rgb_in_pixels) {
+                    const FIVE: u16 = 0b11111;
+                    const SIX: u16 = 0b111111;
+
+                    let pix = u16::from_le_bytes(data);
+                    let r = ((pix >> 11) * 255).rounded_div(FIVE) as u8;
+                    let g = (((pix >> 5) & SIX) * 255).rounded_div(SIX) as u8;
+                    let b = ((pix & FIVE) * 255).rounded_div(FIVE) as u8;
+                    *rgba = [r, g, b, 0xFF];
+                }
+            }
+            PixelFormat::Bgr565 => {
+                let (rgb_in_pixels, _) = buf[params.offset..].as_chunks::<2>();
+
+                for (rgba, &data) in rgba_pixels.iter_mut().zip(rgb_in_pixels) {
+                    const FIVE: u16 = 0b11111;
+                    const SIX: u16 = 0b111111;
+
+                    let pix = u16::from_le_bytes(data);
+                    let b = ((pix >> 11) * 255).rounded_div(FIVE) as u8;
+                    let g = (((pix >> 5) & SIX) * 255).rounded_div(SIX) as u8;
+                    let r = ((pix & FIVE) * 255).rounded_div(FIVE) as u8;
+                    *rgba = [r, g, b, 0xFF];
+                }
+            }
+            PixelFormat::Rgba8 => unsafe { unreachable_unchecked() },
         };
 
-        Handle::from_rgba(params.width, params.height, rgba_bytes)
+        Handle::from_rgba(params.width, params.height, Bytes::from_owner(rgba))
     }
 
     fn regen_image(&self) -> (u64, Task<Message>) {
@@ -476,14 +571,25 @@ impl Message {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter)]
 enum PixelFormat {
     Rgb8,
+    Rgb16,
+    Rgb32,
     Rgba8,
+    Rgba16,
+    Rgba32,
+    Rgb565,
+    Bgr565,
 }
 
 impl PixelFormat {
-    fn size(&self) -> usize {
+    const fn size(&self) -> usize {
         match self {
             Self::Rgb8 => 3,
+            Self::Rgb16 => 6,
+            Self::Rgb32 => 12,
             Self::Rgba8 => 4,
+            Self::Rgba16 => 8,
+            Self::Rgba32 => 16,
+            Self::Rgb565 | Self::Bgr565 => 2,
         }
     }
 }
@@ -492,7 +598,13 @@ impl std::fmt::Display for PixelFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             PixelFormat::Rgb8 => "RGB 8-bit",
+            PixelFormat::Rgb16 => "RGB 16-bit",
+            PixelFormat::Rgb32 => "RGB 32-bit",
             PixelFormat::Rgba8 => "RGBA 8-bit",
+            PixelFormat::Rgba16 => "RGBA 16-bit",
+            PixelFormat::Rgba32 => "RGBA 32-bit",
+            PixelFormat::Rgb565 => "RGB565",
+            PixelFormat::Bgr565 => "BGR565",
         })
     }
 }

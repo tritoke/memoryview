@@ -13,3 +13,4 @@ strum = { version = "0.27.2", features = ["derive"] }
 lucide-icons = { version = "0.575.0" }
 image = { version = "0.25" }
 tokio = { version = "1.49" }
+rounded-div = "0.1.4"

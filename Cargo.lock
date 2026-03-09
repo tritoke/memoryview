@@ -1898,6 +1898,7 @@ dependencies = [
  "lucide-icons",
  "memmap2",
  "num-traits",
+ "rounded-div",
  "strum",
  "tokio",
  "tracing",
@@ -2978,6 +2979,12 @@ name = "rgb"
 version = "0.8.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c6a884d2998352bb4daf0183589aec883f16a6da1f4dde84d8e2e9a5409a1ce"
+
+[[package]]
+name = "rounded-div"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11dc1f50dc7944fb82cb7ac01b2e0b2356bf7d8b176547b92cd462262d7f8ec3"
 
 [[package]]
 name = "roxmltree"
