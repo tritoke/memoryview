@@ -13,6 +13,7 @@ use memmap2::Mmap;
 use strum::{EnumIter, IntoEnumIterator};
 
 use std::{
+    collections::BTreeMap,
     fs::File,
     ops::{Add, RangeInclusive, Sub},
     sync::atomic::{AtomicU64, Ordering},
@@ -60,7 +61,7 @@ fn boot() -> (MemoryView, Task<Message>) {
     };
 
     let state = MemoryView::new(buf);
-    let regen_image_task = state.regen_image();
+    let (_, regen_image_task) = state.regen_image();
     (state, regen_image_task)
 }
 
@@ -76,7 +77,7 @@ struct MemoryView {
     scale_factor: f32,
     view: Option<image::Allocation>,
     view_no: u64,
-    // FEAT: hold handles to close?
+    handles: BTreeMap<u64, iced::task::Handle>,
 }
 
 impl MemoryView {
@@ -96,7 +97,11 @@ impl MemoryView {
             Message::NewImage(view_no, Ok(allocation)) => {
                 if view_no > self.view_no {
                     self.view = Some(allocation);
+                    self.view_no = view_no;
                 }
+
+                // cancel any tasks which are older than the current completed view
+                self.handles.retain(|&handle_no, _| handle_no > view_no);
             }
             Message::SaveImage => {
                 return self.save_image();
@@ -120,7 +125,11 @@ impl MemoryView {
         self.clamp_values();
 
         if needs_regen {
-            self.regen_image()
+            let (handle_no, task) = self.regen_image();
+            let (task, mut handle) = task.abortable();
+            handle = handle.abort_on_drop();
+            self.handles.insert(handle_no, handle);
+            task
         } else {
             Task::none()
         }
@@ -315,6 +324,7 @@ impl MemoryView {
             view_no: 0,
             view: None,
             scale_factor: 1.0,
+            handles: BTreeMap::new(),
         }
     }
 
@@ -359,12 +369,12 @@ impl MemoryView {
         }
     }
 
-    async fn generate_new_image_handle(buf: &'static [u8], params: HandleGenParams) -> Handle {
+    fn generate_new_image_handle(buf: &'static [u8], params: HandleGenParams) -> Handle {
         let rgba_bytes = match params.format {
             PixelFormat::Rgb8 => {
                 let mut rgba = vec![0xFF; params.width as usize * params.height as usize * 4];
 
-                for i in (0..params.width as usize * params.height as usize).step_by(3) {
+                for i in 0..params.width as usize * params.height as usize {
                     rgba[i * 4..i * 4 + 3]
                         .copy_from_slice(&buf[params.offset + i * 3..params.offset + i * 3 + 3]);
                 }
@@ -377,7 +387,7 @@ impl MemoryView {
         Handle::from_rgba(params.width, params.height, rgba_bytes)
     }
 
-    fn regen_image(&self) -> Task<Message> {
+    fn regen_image(&self) -> (u64, Task<Message>) {
         let params = HandleGenParams {
             width: self.width,
             height: self.height,
@@ -385,9 +395,19 @@ impl MemoryView {
             format: self.pixel_format,
         };
 
-        Task::future(Self::generate_new_image_handle(&self.buf[..], params))
-            .then(image::allocate)
-            .map(Message::NewImage.with(HANDLE_NO.fetch_add(1, Ordering::Relaxed)))
+        let handle_no = HANDLE_NO.fetch_add(1, Ordering::Relaxed);
+        let data = &self.buf[..];
+
+        // generate the new image on a blocking tokio thread
+        let task = Task::future(async move {
+            tokio::task::spawn_blocking(move || Self::generate_new_image_handle(data, params))
+                .await
+                .expect("Failed to await blocking thread")
+        })
+        .then(image::allocate)
+        .map(Message::NewImage.with(handle_no));
+
+        (handle_no, task)
     }
 
     fn save_image(&self) -> Task<Message> {
@@ -405,24 +425,20 @@ impl MemoryView {
             unreachable!("non rgba handle???")
         };
 
-        tracing::debug!("[save_image] Before Task::perform");
         Task::perform(save_image(pixels, width, height), Message::SaveImageResult)
     }
 }
 
 async fn save_image(pixels: Bytes, width: u32, height: u32) -> Result<(), String> {
-    tracing::debug!("[save_image] In future!");
     tokio::task::spawn_blocking(move || {
-        let res = img::save_buffer(
+        img::save_buffer(
             "image.png",
             &pixels[..],
             width,
             height,
             img::ColorType::Rgba8,
         )
-        .map_err(|e| e.to_string());
-        tracing::debug!("[save_image] res = {res:?}");
-        res
+        .map_err(|e| e.to_string())
     })
     .await
     .expect("Failed to await blocking task")
