@@ -5,13 +5,14 @@ use iced::{
     alignment::Vertical,
     keyboard,
     widget::{
-        Row, button, column, combo_box, container, image, right, row, slider, text, text_input,
+        Row, button, checkbox, column, container, image, pick_list, right, row, slider, space,
+        text, text_input,
     },
 };
 use lucide_icons::Icon;
 use memmap2::Mmap;
 use rounded_div::RoundedDiv;
-use strum::{EnumIter, IntoEnumIterator};
+use strum::{EnumIter, VariantArray};
 
 use std::{
     collections::BTreeMap,
@@ -76,7 +77,7 @@ struct MemoryView {
     height: u32,
     offset: usize,
     pixel_format: PixelFormat,
-    pixel_format_state: combo_box::State<PixelFormat>,
+    swap_bytes: bool,
     scale_factor: f32,
     view: Option<image::Allocation>,
     view_no: u64,
@@ -94,6 +95,7 @@ impl MemoryView {
             Message::WidthChanged(width) => self.width = width,
             Message::HeightChanged(height) => self.height = height,
             Message::FormatChanged(format) => self.pixel_format = format,
+            Message::ByteSwap(swap_bytes) => self.swap_bytes = swap_bytes,
             Message::ScaleDecrease => self.scale_factor *= 0.8,
             Message::ScaleIncrease => self.scale_factor *= 1.25,
             Message::ScaleReset => self.scale_factor = 1.0,
@@ -219,7 +221,6 @@ impl MemoryView {
             row![label, slider, minus, value_text_input, plus]
                 .spacing(5)
                 .align_y(Vertical::Center)
-                .into()
         }
 
         let mut offset_controls = controls(
@@ -268,13 +269,14 @@ impl MemoryView {
             ..Padding::default()
         });
 
-        let format_combo = combo_box(
-            &self.pixel_format_state,
-            "",
-            Some(&self.pixel_format),
-            Message::FormatChanged,
+        let format_picker = pick_list(
+            Some(self.pixel_format),
+            PixelFormat::VARIANTS,
+            PixelFormat::to_string,
         )
-        .width(300);
+        .on_select(Message::FormatChanged);
+
+        let swap_bytes = checkbox(self.swap_bytes).on_toggle(Message::ByteSwap);
 
         let mut save_button = button("save");
         if self.view.is_some() {
@@ -283,7 +285,10 @@ impl MemoryView {
 
         let format_controls = row![
             text("format").width(LABEL_WIDTH),
-            format_combo,
+            format_picker,
+            space::horizontal().width(5),
+            "Swap byte-order",
+            swap_bytes,
             right(save_button)
         ]
         .spacing(5)
@@ -326,7 +331,7 @@ impl MemoryView {
             height,
             offset: 0,
             pixel_format: PixelFormat::Rgb8,
-            pixel_format_state: combo_box::State::new(PixelFormat::iter().collect()),
+            swap_bytes: false,
             view_no: 0,
             view: None,
             scale_factor: 1.0,
@@ -376,6 +381,7 @@ impl MemoryView {
     }
 
     // TODO: add tests for pixel format conversions matched against GIMP
+    #[rustfmt::skip]
     fn generate_new_image_handle(buf: &'static [u8], params: HandleGenParams) -> Handle {
         // early return for the non-allocating case
         if params.format == PixelFormat::Rgba8 {
@@ -410,9 +416,9 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [rw, gw, bw] = unsafe { mem::transmute::<[u8; 6], [u16; 3]>(data) };
 
-                    let r = rw.rounded_div(0x100) as u8;
-                    let g = gw.rounded_div(0x100) as u8;
-                    let b = bw.rounded_div(0x100) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
                     *rgba = [r, g, b, 0xFF];
                 }
             }
@@ -423,9 +429,9 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [bw, gw, rw] = unsafe { mem::transmute::<[u8; 6], [u16; 3]>(data) };
 
-                    let r = rw.rounded_div(0x100) as u8;
-                    let g = gw.rounded_div(0x100) as u8;
-                    let b = bw.rounded_div(0x100) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
                     *rgba = [r, g, b, 0xFF];
                 }
             }
@@ -436,9 +442,9 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [rw, gw, bw] = unsafe { mem::transmute::<[u8; 12], [u32; 3]>(data) };
 
-                    let r = rw.rounded_div(0x1_000_000) as u8;
-                    let g = gw.rounded_div(0x1_000_000) as u8;
-                    let b = bw.rounded_div(0x1_000_000) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
                     *rgba = [r, g, b, 0xFF];
                 }
             }
@@ -449,9 +455,9 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [bw, gw, rw] = unsafe { mem::transmute::<[u8; 12], [u32; 3]>(data) };
 
-                    let r = rw.rounded_div(0x1_000_000) as u8;
-                    let g = gw.rounded_div(0x1_000_000) as u8;
-                    let b = bw.rounded_div(0x1_000_000) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
                     *rgba = [r, g, b, 0xFF];
                 }
             }
@@ -469,10 +475,10 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [rw, gw, bw, aw] = unsafe { mem::transmute::<[u8; 8], [u16; 4]>(data) };
 
-                    let r = rw.rounded_div(0x100) as u8;
-                    let g = gw.rounded_div(0x100) as u8;
-                    let b = bw.rounded_div(0x100) as u8;
-                    let a = aw.rounded_div(0x100) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let a = aw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
                     *rgba = [r, g, b, a];
                 }
             }
@@ -483,10 +489,10 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [bw, gw, rw, aw] = unsafe { mem::transmute::<[u8; 8], [u16; 4]>(data) };
 
-                    let r = rw.rounded_div(0x100) as u8;
-                    let g = gw.rounded_div(0x100) as u8;
-                    let b = bw.rounded_div(0x100) as u8;
-                    let a = aw.rounded_div(0x100) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    let a = aw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
                     *rgba = [r, g, b, a];
                 }
             }
@@ -497,10 +503,10 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [rw, gw, bw, aw] = unsafe { mem::transmute::<[u8; 16], [u32; 4]>(data) };
 
-                    let r = rw.rounded_div(0x1_000_000) as u8;
-                    let g = gw.rounded_div(0x1_000_000) as u8;
-                    let b = bw.rounded_div(0x1_000_000) as u8;
-                    let a = aw.rounded_div(0x1_000_000) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let a = aw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
                     *rgba = [r, g, b, a];
                 }
             }
@@ -511,10 +517,10 @@ impl MemoryView {
                     // safety: don't worry about ittttt
                     let [bw, gw, rw, aw] = unsafe { mem::transmute::<[u8; 16], [u32; 4]>(data) };
 
-                    let r = rw.rounded_div(0x1_000_000) as u8;
-                    let g = gw.rounded_div(0x1_000_000) as u8;
-                    let b = bw.rounded_div(0x1_000_000) as u8;
-                    let a = aw.rounded_div(0x1_000_000) as u8;
+                    let r = rw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let g = gw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let b = bw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
+                    let a = aw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1_000_000) as u8;
                     *rgba = [r, g, b, a];
                 }
             }
@@ -558,6 +564,7 @@ impl MemoryView {
             height: self.height,
             offset: self.offset,
             format: self.pixel_format,
+            swap_bytes: self.swap_bytes,
         };
 
         let handle_no = HANDLE_NO.fetch_add(1, Ordering::Relaxed);
@@ -616,6 +623,7 @@ enum Message {
     WidthChanged(u32),
     HeightChanged(u32),
     FormatChanged(PixelFormat),
+    ByteSwap(bool),
     ScaleIncrease,
     ScaleDecrease,
     ScaleReset,
@@ -630,13 +638,14 @@ impl Message {
             self,
             Self::WidthChanged(_)
                 | Self::HeightChanged(_)
-                | Self::FormatChanged(_)
                 | Self::OffsetChanged(_)
+                | Self::FormatChanged(_)
+                | Self::ByteSwap(_)
         )
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter, VariantArray)]
 enum PixelFormat {
     Rgb8,
     Rgb16,
@@ -699,4 +708,27 @@ struct HandleGenParams {
     width: u32,
     height: u32,
     format: PixelFormat,
+    swap_bytes: bool,
+}
+
+trait SwapBytesCond {
+    fn swap_bytes_cond(self, swap: bool) -> Self;
+}
+
+impl SwapBytesCond for u8 {
+    fn swap_bytes_cond(self, _swap: bool) -> Self {
+        self
+    }
+}
+
+impl SwapBytesCond for u16 {
+    fn swap_bytes_cond(self, swap: bool) -> Self {
+        if swap { self.swap_bytes() } else { self }
+    }
+}
+
+impl SwapBytesCond for u32 {
+    fn swap_bytes_cond(self, swap: bool) -> Self {
+        if swap { self.swap_bytes() } else { self }
+    }
 }
