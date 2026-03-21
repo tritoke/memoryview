@@ -1,6 +1,6 @@
 use ::image as img;
 use iced::{
-    Color, Element, Function, Padding, Subscription, Task, Theme,
+    Alignment, Color, Element, Length, Padding, Subscription, Task, Theme,
     advanced::{graphics::core::Bytes, image::Handle},
     alignment::Vertical,
     keyboard,
@@ -15,12 +15,10 @@ use rounded_div::RoundedDiv;
 use strum::{EnumIter, VariantArray};
 
 use std::{
-    collections::BTreeMap,
     fs::File,
     hint::unreachable_unchecked,
     mem,
     ops::{Add, RangeInclusive, Sub},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 fn main() {
@@ -65,11 +63,9 @@ fn boot() -> (MemoryView, Task<Message>) {
     };
 
     let state = MemoryView::new(buf);
-    let (_, regen_image_task) = state.regen_image();
+    let regen_image_task = state.regen_image();
     (state, regen_image_task)
 }
-
-static HANDLE_NO: AtomicU64 = AtomicU64::new(1);
 
 struct MemoryView {
     buf: &'static Mmap,
@@ -80,8 +76,7 @@ struct MemoryView {
     swap_bytes: bool,
     scale_factor: f32,
     view: Option<image::Allocation>,
-    view_no: u64,
-    handles: BTreeMap<u64, iced::task::Handle>,
+    image_regen_task: Option<iced::task::Handle>,
 }
 
 impl MemoryView {
@@ -99,14 +94,8 @@ impl MemoryView {
             Message::ScaleDecrease => self.scale_factor *= 0.8,
             Message::ScaleIncrease => self.scale_factor *= 1.25,
             Message::ScaleReset => self.scale_factor = 1.0,
-            Message::NewImage(view_no, Ok(allocation)) => {
-                if view_no > self.view_no {
-                    self.view = Some(allocation);
-                    self.view_no = view_no;
-                }
-
-                // cancel any tasks which are older than the current completed view
-                self.handles.retain(|&handle_no, _| handle_no > view_no);
+            Message::NewImage(Ok(allocation)) => {
+                self.view = Some(allocation);
             }
             Message::SaveImage => {
                 return self.save_image();
@@ -116,7 +105,7 @@ impl MemoryView {
                 // TODO: show a toast to say the file was saved
                 return Task::none();
             }
-            Message::NewImage(_, Err(e)) => {
+            Message::NewImage(Err(e)) => {
                 tracing::error!("Failed generating new image: {e}");
                 // TODO: maybe show a toast to say we fucked it?
                 return Task::none();
@@ -130,10 +119,9 @@ impl MemoryView {
         self.clamp_values();
 
         if needs_regen {
-            let (handle_no, task) = self.regen_image();
-            let (task, mut handle) = task.abortable();
-            handle = handle.abort_on_drop();
-            self.handles.insert(handle_no, handle);
+            let task = self.regen_image();
+            let (task, handle) = task.abortable();
+            self.image_regen_task = Some(handle.abort_on_drop());
             task
         } else {
             Task::none()
@@ -233,14 +221,14 @@ impl MemoryView {
         let mut skip_left_button = button(icon(Icon::ChevronLeft));
         if self.offset != 0 {
             skip_left_button = skip_left_button.on_press(Message::OffsetChanged(
-                self.offset.saturating_sub(self.image_size_bytes()),
+                self.offset.saturating_sub(self.image_size_bits()),
             ));
         }
 
         let mut skip_right_button = button(icon(Icon::ChevronRight));
         if self.offset != self.offset_max() {
             skip_right_button = skip_right_button.on_press(Message::OffsetChanged(
-                self.offset.saturating_add(self.image_size_bytes()),
+                self.offset.saturating_add(self.image_size_bits()),
             ));
         }
 
@@ -287,7 +275,11 @@ impl MemoryView {
             text("format").width(LABEL_WIDTH),
             format_picker,
             space::horizontal().width(5),
-            "Swap byte-order",
+            if self.pixel_format.is_bit_orientated() {
+                "Swap bit-order"
+            } else {
+                "Swap byte-order"
+            },
             swap_bytes,
             right(save_button)
         ]
@@ -309,8 +301,13 @@ impl MemoryView {
         let mut elems = column![control_col];
 
         if let Some(allocation) = &self.view {
-            let img = container(image(allocation.handle()))
+            let image_with_background = container(image(allocation.handle()))
                 .style(|_| iced::widget::container::background(Color::BLACK));
+            let img = container(image_with_background)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center);
 
             elems = elems.push(img);
         }
@@ -332,21 +329,29 @@ impl MemoryView {
             offset: 0,
             pixel_format: PixelFormat::Rgb8,
             swap_bytes: false,
-            view_no: 0,
             view: None,
             scale_factor: 1.0,
-            handles: BTreeMap::new(),
+            image_regen_task: None,
         }
     }
 
-    fn image_size_bytes(&self) -> usize {
+    fn image_size_bits(&self) -> usize {
         (self.width as usize)
             .saturating_mul(self.height as usize)
-            .saturating_mul(self.pixel_format.size())
+            .saturating_mul(self.pixel_format.size_bits())
     }
 
     fn offset_max(&self) -> usize {
-        self.buf.len().saturating_sub(self.image_size_bytes())
+        if self.pixel_format.is_bit_orientated() {
+            self.buf
+                .len()
+                .saturating_mul(8)
+                .saturating_sub(self.image_size_bits())
+        } else {
+            self.buf
+                .len()
+                .saturating_sub(self.image_size_bits().div_ceil(8))
+        }
     }
 
     fn offset_range(&self) -> RangeInclusive<usize> {
@@ -395,6 +400,98 @@ impl MemoryView {
         let mut rgba = vec![0; params.width as usize * params.height as usize * 4];
         let (rgba_pixels, _) = rgba.as_chunks_mut::<4>();
         match params.format {
+            PixelFormat::Bw1 => {
+                let bits: Box<dyn Iterator<Item = bool>> = if params.swap_bytes {
+                    Box::new(buf.rbits())
+                } else {
+                    Box::new(buf.bits())
+                };
+
+                for (rgba, bit) in rgba_pixels.iter_mut().zip(bits.skip(params.offset)) {
+                    if bit {
+                        *rgba = [0xFF, 0xFF, 0xFF, 0xFF];
+                    } else {
+                        *rgba = [0x00, 0x00, 0x00, 0xFF];
+                    }
+                }
+            }
+            PixelFormat::Gr2 => {
+                // TODO: when array_chunks is stable use that instead
+                let bits: Box<dyn Iterator<Item = (bool, bool)>> = if params.swap_bytes {
+                    let rbits = buf.rbits().skip(params.offset);
+                    let rbits_even = rbits.clone().step_by(2);
+                    let rbits_odd = rbits.skip(1).step_by(2);
+                    Box::new(rbits_even.zip(rbits_odd))
+                } else {
+                    let bits = buf.bits().skip(params.offset);
+                    let bits_even = bits.clone().step_by(2);
+                    let bits_odd = bits.skip(1).step_by(2);
+                    Box::new(bits_even.zip(bits_odd))
+                };
+
+                let greyscale = bits.map(|bit| {
+                    match bit {
+                        (false, false) => 0x00,
+                        (false, true) => 0x55,
+                        (true, false) => 0xAA,
+                        (true, true) => 0xFF,
+                    }
+                });
+
+                for (rgba, lux) in rgba_pixels.iter_mut().zip(greyscale) {
+                    *rgba = [lux, lux, lux, 0xFF];
+                }
+            }
+            PixelFormat::Gr4 => {
+                // TODO: when array_chunks is stable use that instead
+                let bits: Box<dyn Iterator<Item = (((bool, bool), bool), bool)>> = if params.swap_bytes {
+                    let rbits = buf.rbits().skip(params.offset);
+                    let rbits_0 = rbits.clone().step_by(4);
+                    let rbits_1 = rbits.clone().skip(1).step_by(4);
+                    let rbits_2 = rbits.clone().skip(2).step_by(4);
+                    let rbits_3 = rbits.skip(3).step_by(4);
+                    Box::new(rbits_0.zip(rbits_1).zip(rbits_2).zip(rbits_3))
+                } else {
+                    let bits = buf.bits().skip(params.offset);
+                    let bits_0 = bits.clone().step_by(4);
+                    let bits_1 = bits.clone().skip(1).step_by(4);
+                    let bits_2 = bits.clone().skip(2).step_by(4);
+                    let bits_3 = bits.skip(3).step_by(4);
+                    Box::new(bits_0.zip(bits_1).zip(bits_2).zip(bits_3))
+                };
+
+                let greyscale = bits.map(|(((a, b), c), d)| {
+                    let k = (a as u32) << 3 | (b as u32) << 2 | (c as u32) << 1 | d as u32;
+                    ((255 * k) / 15) as u8
+                });
+
+                for (rgba, lux) in rgba_pixels.iter_mut().zip(greyscale) {
+                    *rgba = [lux, lux, lux, 0xFF];
+                }
+            }
+            PixelFormat::Gr8 => {
+                for (rgba, &lux) in rgba_pixels.iter_mut().zip(&buf[params.offset..]) {
+                    *rgba = [lux, lux, lux, 0xFF];
+                }
+            }
+            PixelFormat::Gr16 => {
+                let (greyscale_pixels, _) = buf[params.offset..].as_chunks::<2>();
+
+                for (rgba, &luxw) in rgba_pixels.iter_mut().zip(greyscale_pixels) {
+                    let lux_raw = u16::from_ne_bytes(luxw);
+                    let lux = lux_raw.swap_bytes_cond(params.swap_bytes).rounded_div(0x100) as u8;
+                    *rgba = [lux, lux, lux, 0xFF];
+                }
+            }
+            PixelFormat::Gr32 => {
+                let (greyscale_pixels, _) = buf[params.offset..].as_chunks::<4>();
+
+                for (rgba, &luxw) in rgba_pixels.iter_mut().zip(greyscale_pixels) {
+                    let lux_raw = u32::from_ne_bytes(luxw);
+                    let lux = lux_raw.swap_bytes_cond(params.swap_bytes).rounded_div(0x1000000) as u8;
+                    *rgba = [lux, lux, lux, 0xFF];
+                }
+            }
             PixelFormat::Rgb8 => {
                 let (rgb_pixels, _) = buf[params.offset..].as_chunks::<3>();
 
@@ -558,7 +655,7 @@ impl MemoryView {
         Handle::from_rgba(params.width, params.height, Bytes::from_owner(rgba))
     }
 
-    fn regen_image(&self) -> (u64, Task<Message>) {
+    fn regen_image(&self) -> Task<Message> {
         let params = HandleGenParams {
             width: self.width,
             height: self.height,
@@ -567,19 +664,16 @@ impl MemoryView {
             swap_bytes: self.swap_bytes,
         };
 
-        let handle_no = HANDLE_NO.fetch_add(1, Ordering::Relaxed);
         let data = &self.buf[..];
 
         // generate the new image on a blocking tokio thread
-        let task = Task::future(async move {
+        Task::future(async move {
             tokio::task::spawn_blocking(move || Self::generate_new_image_handle(data, params))
                 .await
                 .expect("Failed to await blocking thread")
         })
         .then(image::allocate)
-        .map(Message::NewImage.with(handle_no));
-
-        (handle_no, task)
+        .map(Message::NewImage)
     }
 
     fn save_image(&self) -> Task<Message> {
@@ -627,7 +721,7 @@ enum Message {
     ScaleIncrease,
     ScaleDecrease,
     ScaleReset,
-    NewImage(u64, Result<image::Allocation, image::Error>),
+    NewImage(Result<image::Allocation, image::Error>),
     SaveImage,
     SaveImageResult(Result<(), String>),
 }
@@ -647,6 +741,12 @@ impl Message {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter, VariantArray)]
 enum PixelFormat {
+    Bw1,
+    Gr2,
+    Gr4,
+    Gr8,
+    Gr16,
+    Gr32,
     Rgb8,
     Rgb16,
     Rgb32,
@@ -664,22 +764,38 @@ enum PixelFormat {
 }
 
 impl PixelFormat {
-    const fn size(&self) -> usize {
+    const fn size_bits(&self) -> usize {
         match self {
-            Self::Bgr8 | Self::Rgb8 => 3,
-            Self::Bgr16 | Self::Rgb16 => 6,
-            Self::Bgr32 | Self::Rgb32 => 12,
-            Self::Bgra8 | Self::Rgba8 => 4,
-            Self::Bgra16 | Self::Rgba16 => 8,
-            Self::Bgra32 | Self::Rgba32 => 16,
-            Self::Rgb565 | Self::Bgr565 => 2,
+            Self::Bw1 => 1,
+            Self::Gr2 => 2,
+            Self::Gr4 => 4,
+            Self::Gr8 => 8,
+            Self::Gr16 => 16,
+            Self::Gr32 => 32,
+            Self::Bgr8 | Self::Rgb8 => 3 * 8,
+            Self::Bgr16 | Self::Rgb16 => 6 * 8,
+            Self::Bgr32 | Self::Rgb32 => 12 * 8,
+            Self::Bgra8 | Self::Rgba8 => 4 * 8,
+            Self::Bgra16 | Self::Rgba16 => 8 * 8,
+            Self::Bgra32 | Self::Rgba32 => 16 * 8,
+            Self::Rgb565 | Self::Bgr565 => 2 * 8,
         }
+    }
+
+    const fn is_bit_orientated(&self) -> bool {
+        self.size_bits() < 8
     }
 }
 
 impl std::fmt::Display for PixelFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
+            PixelFormat::Bw1 => "B&W 1-bit",
+            PixelFormat::Gr2 => "Greyscale 2-bit",
+            PixelFormat::Gr4 => "Greyscale 4-bit",
+            PixelFormat::Gr8 => "Greyscale 8-bit",
+            PixelFormat::Gr16 => "Greyscale 16-bit",
+            PixelFormat::Gr32 => "Greyscale 32-bit",
             PixelFormat::Rgb8 => "RGB 8-bit",
             PixelFormat::Rgb16 => "RGB 16-bit",
             PixelFormat::Rgb32 => "RGB 32-bit",
@@ -730,5 +846,42 @@ impl SwapBytesCond for u16 {
 impl SwapBytesCond for u32 {
     fn swap_bytes_cond(self, swap: bool) -> Self {
         if swap { self.swap_bytes() } else { self }
+    }
+}
+
+trait Biterator {
+    fn bits(&self) -> impl Iterator<Item = bool> + Clone;
+    fn rbits(&self) -> impl Iterator<Item = bool> + Clone;
+}
+
+impl Biterator for [u8] {
+    fn bits(&self) -> impl Iterator<Item = bool> + Clone {
+        self.iter().flat_map(|&byte| {
+            [
+                (byte >> 7) & 1 == 1,
+                (byte >> 6) & 1 == 1,
+                (byte >> 5) & 1 == 1,
+                (byte >> 4) & 1 == 1,
+                (byte >> 3) & 1 == 1,
+                (byte >> 2) & 1 == 1,
+                (byte >> 1) & 1 == 1,
+                byte & 1 == 1,
+            ]
+        })
+    }
+
+    fn rbits(&self) -> impl Iterator<Item = bool> + Clone {
+        self.iter().flat_map(|&byte| {
+            [
+                byte & 1 == 1,
+                (byte >> 1) & 1 == 1,
+                (byte >> 2) & 1 == 1,
+                (byte >> 3) & 1 == 1,
+                (byte >> 4) & 1 == 1,
+                (byte >> 5) & 1 == 1,
+                (byte >> 6) & 1 == 1,
+                (byte >> 7) & 1 == 1,
+            ]
+        })
     }
 }
