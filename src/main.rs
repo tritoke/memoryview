@@ -81,8 +81,6 @@ struct MemoryView {
 
 impl MemoryView {
     fn update(&mut self, message: Message) -> Task<Message> {
-        tracing::debug!("{message:?}");
-
         let needs_regen = message.invalidates_image();
 
         match message {
@@ -275,7 +273,7 @@ impl MemoryView {
             text("format").width(LABEL_WIDTH),
             format_picker,
             space::horizontal().width(5),
-            if self.pixel_format.is_bit_orientated() {
+            if self.pixel_format.is_bit_oriented() {
                 "Swap bit-order"
             } else {
                 "Swap byte-order"
@@ -342,7 +340,7 @@ impl MemoryView {
     }
 
     fn offset_max(&self) -> usize {
-        if self.pixel_format.is_bit_orientated() {
+        if self.pixel_format.is_bit_oriented() {
             self.buf
                 .len()
                 .saturating_mul(8)
@@ -402,9 +400,9 @@ impl MemoryView {
         match params.format {
             PixelFormat::Bw1 => {
                 let bits: Box<dyn Iterator<Item = bool>> = if params.swap_bytes {
-                    Box::new(buf.rbits())
+                    Box::new(RBiterator::from(buf))
                 } else {
-                    Box::new(buf.bits())
+                    Box::new(Biterator::from(buf))
                 };
 
                 for (rgba, bit) in rgba_pixels.iter_mut().zip(bits.skip(params.offset)) {
@@ -418,12 +416,12 @@ impl MemoryView {
             PixelFormat::Gr2 => {
                 // TODO: when array_chunks is stable use that instead
                 let bits: Box<dyn Iterator<Item = (bool, bool)>> = if params.swap_bytes {
-                    let rbits = buf.rbits().skip(params.offset);
+                    let rbits = RBiterator::from(buf).skip(params.offset);
                     let rbits_even = rbits.clone().step_by(2);
                     let rbits_odd = rbits.skip(1).step_by(2);
                     Box::new(rbits_even.zip(rbits_odd))
                 } else {
-                    let bits = buf.bits().skip(params.offset);
+                    let bits = Biterator::from(buf).skip(params.offset);
                     let bits_even = bits.clone().step_by(2);
                     let bits_odd = bits.skip(1).step_by(2);
                     Box::new(bits_even.zip(bits_odd))
@@ -445,14 +443,14 @@ impl MemoryView {
             PixelFormat::Gr4 => {
                 // TODO: when array_chunks is stable use that instead
                 let bits: Box<dyn Iterator<Item = (((bool, bool), bool), bool)>> = if params.swap_bytes {
-                    let rbits = buf.rbits().skip(params.offset);
+                    let rbits = RBiterator::from(buf).skip(params.offset);
                     let rbits_0 = rbits.clone().step_by(4);
                     let rbits_1 = rbits.clone().skip(1).step_by(4);
                     let rbits_2 = rbits.clone().skip(2).step_by(4);
                     let rbits_3 = rbits.skip(3).step_by(4);
                     Box::new(rbits_0.zip(rbits_1).zip(rbits_2).zip(rbits_3))
                 } else {
-                    let bits = buf.bits().skip(params.offset);
+                    let bits = Biterator::from(buf).skip(params.offset);
                     let bits_0 = bits.clone().step_by(4);
                     let bits_1 = bits.clone().skip(1).step_by(4);
                     let bits_2 = bits.clone().skip(2).step_by(4);
@@ -711,7 +709,7 @@ async fn save_image(pixels: Bytes, width: u32, height: u32) -> Result<(), String
 }
 
 #[allow(clippy::enum_variant_names)]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum Message {
     OffsetChanged(usize),
     WidthChanged(u32),
@@ -782,7 +780,7 @@ impl PixelFormat {
         }
     }
 
-    const fn is_bit_orientated(&self) -> bool {
+    const fn is_bit_oriented(&self) -> bool {
         self.size_bits() < 8
     }
 }
@@ -831,12 +829,6 @@ trait SwapBytesCond {
     fn swap_bytes_cond(self, swap: bool) -> Self;
 }
 
-impl SwapBytesCond for u8 {
-    fn swap_bytes_cond(self, _swap: bool) -> Self {
-        self
-    }
-}
-
 impl SwapBytesCond for u16 {
     fn swap_bytes_cond(self, swap: bool) -> Self {
         if swap { self.swap_bytes() } else { self }
@@ -849,39 +841,192 @@ impl SwapBytesCond for u32 {
     }
 }
 
-trait Biterator {
-    fn bits(&self) -> impl Iterator<Item = bool> + Clone;
-    fn rbits(&self) -> impl Iterator<Item = bool> + Clone;
+#[derive(Clone, Copy, Debug)]
+struct Biterator {
+    buf: &'static [u8],
+    bit_offset: usize,
+    byte_offset: usize,
 }
 
-impl Biterator for [u8] {
-    fn bits(&self) -> impl Iterator<Item = bool> + Clone {
-        self.iter().flat_map(|&byte| {
-            [
-                (byte >> 7) & 1 == 1,
-                (byte >> 6) & 1 == 1,
-                (byte >> 5) & 1 == 1,
-                (byte >> 4) & 1 == 1,
-                (byte >> 3) & 1 == 1,
-                (byte >> 2) & 1 == 1,
-                (byte >> 1) & 1 == 1,
-                byte & 1 == 1,
-            ]
-        })
+impl From<&'static [u8]> for Biterator {
+    fn from(buf: &'static [u8]) -> Self {
+        Self {
+            buf,
+            bit_offset: 0,
+            byte_offset: 0,
+        }
+    }
+}
+
+impl Iterator for Biterator {
+    type Item = bool;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let shift = 7 - self.bit_offset;
+        let byte = *self.buf.get(self.byte_offset)?;
+
+        if self.bit_offset == 7 {
+            self.byte_offset += 1;
+            self.bit_offset = 0;
+        } else {
+            self.bit_offset += 1;
+        }
+
+        Some(((byte >> shift) & 1) == 1)
     }
 
-    fn rbits(&self) -> impl Iterator<Item = bool> + Clone {
-        self.iter().flat_map(|&byte| {
-            [
-                byte & 1 == 1,
-                (byte >> 1) & 1 == 1,
-                (byte >> 2) & 1 == 1,
-                (byte >> 3) & 1 == 1,
-                (byte >> 4) & 1 == 1,
-                (byte >> 5) & 1 == 1,
-                (byte >> 6) & 1 == 1,
-                (byte >> 7) & 1 == 1,
-            ]
-        })
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        let byte_offset = n / 8;
+        let bit_offset = n % 8;
+
+        let x = self.bit_offset + bit_offset;
+        self.bit_offset = x & 0b111;
+        self.byte_offset = self
+            .byte_offset
+            .checked_add(byte_offset)
+            .and_then(|n| n.checked_add(x >> 3))
+            .expect("impressive, you've come a reaallly long way 😂");
+
+        self.next()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RBiterator {
+    buf: &'static [u8],
+    bit_offset: usize,
+    byte_offset: usize,
+}
+
+impl From<&'static [u8]> for RBiterator {
+    fn from(buf: &'static [u8]) -> Self {
+        Self {
+            buf,
+            bit_offset: 0,
+            byte_offset: 0,
+        }
+    }
+}
+
+impl Iterator for RBiterator {
+    type Item = bool;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let shift = self.bit_offset;
+        let byte = *self.buf.get(self.byte_offset)?;
+
+        if self.bit_offset == 7 {
+            self.byte_offset += 1;
+            self.bit_offset = 0;
+        } else {
+            self.bit_offset += 1;
+        }
+
+        Some(((byte >> shift) & 1) == 1)
+    }
+
+    fn nth(&mut self, n: usize) -> Option<Self::Item> {
+        let byte_offset = n / 8;
+        let bit_offset = n % 8;
+
+        let x = self.bit_offset + bit_offset;
+        self.bit_offset = x & 0b111;
+        self.bit_offset = x & 0b111;
+        self.byte_offset = self
+            .byte_offset
+            .checked_add(byte_offset)
+            .and_then(|n| n.checked_add(x >> 3))
+            .expect("impressive, you've come a reaallly long way 😂");
+
+        self.next()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_biterator() {
+        let mut iter = Biterator::from(&[0xFF, 0x00, 0b11110000, 0b10101010][..]);
+        for _ in 0..8 {
+            assert_eq!(iter.next(), Some(true));
+        }
+        for _ in 0..8 {
+            assert_eq!(iter.next(), Some(false));
+        }
+        for _ in 0..4 {
+            assert_eq!(iter.next(), Some(true));
+        }
+        for _ in 0..4 {
+            assert_eq!(iter.next(), Some(false));
+        }
+        for _ in 0..4 {
+            assert_eq!(iter.next(), Some(true));
+            assert_eq!(iter.next(), Some(false));
+        }
+    }
+
+    #[test]
+    fn test_biterator_nth() {
+        let base_iter = Biterator::from(&[0xFF, 0x00, 0b11110000, 0b10101010][..]);
+
+        for i in 0..8 {
+            assert_eq!(base_iter.clone().nth(i), Some(true));
+        }
+        for i in 8..16 {
+            assert_eq!(base_iter.clone().nth(i), Some(false));
+        }
+        for i in 16..20 {
+            assert_eq!(base_iter.clone().nth(i), Some(true));
+        }
+        for i in 20..24 {
+            assert_eq!(base_iter.clone().nth(i), Some(false));
+        }
+        for i in 24..32 {
+            assert_eq!(base_iter.clone().nth(i), Some(i % 2 == 0));
+        }
+    }
+
+    #[test]
+    fn test_rbiterator() {
+        let mut iter = RBiterator::from(&[0xFF, 0x00, 0b11110000, 0b10101010][..]);
+        for _ in 0..8 {
+            assert_eq!(iter.next(), Some(true));
+        }
+        for _ in 0..8 {
+            assert_eq!(iter.next(), Some(false));
+        }
+        for _ in 0..4 {
+            assert_eq!(iter.next(), Some(false));
+        }
+        for _ in 0..4 {
+            assert_eq!(iter.next(), Some(true));
+        }
+        for _ in 0..4 {
+            assert_eq!(iter.next(), Some(false));
+            assert_eq!(iter.next(), Some(true));
+        }
+    }
+
+    #[test]
+    fn test_rbiterator_nth() {
+        let base_iter = RBiterator::from(&[0xFF, 0x00, 0b11110000, 0b10101010][..]);
+
+        for i in 0..8 {
+            assert_eq!(base_iter.clone().nth(i), Some(true));
+        }
+        for i in 8..16 {
+            assert_eq!(base_iter.clone().nth(i), Some(false));
+        }
+        for i in 16..20 {
+            assert_eq!(base_iter.clone().nth(i), Some(false));
+        }
+        for i in 20..24 {
+            assert_eq!(base_iter.clone().nth(i), Some(true));
+        }
+        for i in 24..32 {
+            assert_eq!(base_iter.clone().nth(i), Some(i % 2 == 1));
+        }
     }
 }
