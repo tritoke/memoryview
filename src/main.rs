@@ -1,6 +1,13 @@
+use std::{
+    fs::File,
+    hint::unreachable_unchecked,
+    mem,
+    ops::{Add, RangeInclusive, Sub},
+};
+
 use ::image as img;
 use iced::{
-    Alignment, Color, Element, Length, Padding, Subscription, Task, Theme,
+    Alignment, Color, Element, Padding, Subscription, Task, Theme,
     advanced::{graphics::core::Bytes, image::Handle},
     alignment::Vertical,
     keyboard,
@@ -14,12 +21,8 @@ use memmap2::Mmap;
 use rounded_div::RoundedDiv;
 use strum::{EnumIter, VariantArray};
 
-use std::{
-    fs::File,
-    hint::unreachable_unchecked,
-    mem,
-    ops::{Add, RangeInclusive, Sub},
-};
+mod toasts;
+use toasts::{Status, Toast};
 
 fn main() {
     tracing_subscriber::fmt::init();
@@ -77,6 +80,7 @@ struct MemoryView {
     scale_factor: f32,
     view: Option<image::Allocation>,
     image_regen_task: Option<iced::task::Handle>,
+    toasts: Vec<Toast>,
 }
 
 impl MemoryView {
@@ -100,17 +104,33 @@ impl MemoryView {
             }
             Message::SaveImageResult(Ok(())) => {
                 tracing::debug!("Successfully saved image");
-                // TODO: show a toast to say the file was saved
+                self.toasts.push(Toast {
+                    title: String::from("memoryview"),
+                    body: String::from("Saved image to image.png"),
+                    status: Status::Success,
+                });
                 return Task::none();
             }
             Message::NewImage(Err(e)) => {
                 tracing::error!("Failed generating new image: {e}");
-                // TODO: maybe show a toast to say we fucked it?
+                self.toasts.push(Toast {
+                    title: String::from("memoryview"),
+                    body: format!("Failed to generate an image: {e}"),
+                    status: Status::Warning,
+                });
                 return Task::none();
             }
             Message::SaveImageResult(Err(e)) => {
                 tracing::error!("Failed saving image: {e}");
-                // TODO: show a toast to say we fucked it
+                self.toasts.push(Toast {
+                    title: String::from("memoryview"),
+                    body: format!("Failed to save the image: {e}"),
+                    status: Status::Warning,
+                });
+            }
+            Message::CloseToast(idx) => {
+                self.toasts.remove(idx);
+                return Task::none();
             }
         }
 
@@ -296,21 +316,18 @@ impl MemoryView {
         .spacing(5)
         .padding(5);
 
-        let mut elems = column![control_col];
+        let mut content = column![control_col];
 
         if let Some(allocation) = &self.view {
             let image_with_background = container(image(allocation.handle()))
-                .style(|_| iced::widget::container::background(Color::BLACK));
-            let img = container(image_with_background)
-                .width(Length::Fill)
-                .height(Length::Fill)
+                .style(|_| iced::widget::container::background(Color::BLACK))
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center);
 
-            elems = elems.push(img);
+            content = content.push(image_with_background);
         }
 
-        elems.into()
+        toasts::Manager::new(content, &self.toasts, Message::CloseToast).into()
     }
 }
 
@@ -330,6 +347,7 @@ impl MemoryView {
             view: None,
             scale_factor: 1.0,
             image_regen_task: None,
+            toasts: Vec::new(),
         }
     }
 
@@ -722,6 +740,7 @@ enum Message {
     NewImage(Result<image::Allocation, image::Error>),
     SaveImage,
     SaveImageResult(Result<(), String>),
+    CloseToast(usize),
 }
 
 impl Message {

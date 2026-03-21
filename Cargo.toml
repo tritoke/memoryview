@@ -10,7 +10,7 @@ tracing = "0.1.44"
 tracing-subscriber = "0.3.22"
 num-traits = "0.2.19"
 strum = { version = "0.27.2", features = ["derive"] }
-lucide-icons = { version = "0.575.0" }
-image = { version = "0.25" }
-tokio = { version = "1.49" }
+lucide-icons = "0.575.0"
+image = "0.25"
+tokio = "1.49"
 rounded-div = "0.1.4"
