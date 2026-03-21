@@ -7,14 +7,9 @@ use std::{
 
 use ::image as img;
 use iced::{
-    Alignment, Color, Element, Padding, Subscription, Task, Theme,
-    advanced::{graphics::core::Bytes, image::Handle},
-    alignment::Vertical,
-    keyboard,
-    widget::{
-        Row, button, checkbox, column, container, image, pick_list, right, row, slider, space,
-        text, text_input,
-    },
+    advanced::{graphics::core::Bytes, image::Handle}, alignment::Vertical, keyboard, widget::{
+        button, checkbox, column, container, image, pick_list, right, row, slider, space, text, text_input, Row
+    }, Alignment, Color, Element, Length, Padding, Subscription, Task, Theme
 };
 use lucide_icons::Icon;
 use memmap2::Mmap;
@@ -304,9 +299,6 @@ impl MemoryView {
         .spacing(5)
         .align_y(Vertical::Center);
 
-        // TODO: Add endianness control for >8 bit formats
-        // TODO: Add data type controls, i.e. signed, unsigned, float
-
         let control_col = column![
             offset_controls,
             width_controls,
@@ -320,11 +312,14 @@ impl MemoryView {
 
         if let Some(allocation) = &self.view {
             let image_with_background = container(image(allocation.handle()))
-                .style(|_| iced::widget::container::background(Color::BLACK))
+                .style(|_| iced::widget::container::background(Color::BLACK));
+
+            let img = container(image_with_background)
+                .center(Length::Fill)
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center);
 
-            content = content.push(image_with_background);
+            content = content.push(img);
         }
 
         toasts::Manager::new(content, &self.toasts, Message::CloseToast).into()
@@ -832,7 +827,7 @@ impl std::fmt::Display for PixelFormat {
 }
 
 fn icon<'a>(icon: Icon) -> iced::widget::Text<'a> {
-    iced::widget::text(char::from(icon).to_string()).font(iced::Font::with_name("lucide"))
+    iced::widget::text(char::from(icon).to_string()).font(iced::Font::with_family("lucide"))
 }
 
 #[derive(Copy, Clone, Debug)]
