@@ -7,9 +7,14 @@ use std::{
 
 use ::image as img;
 use iced::{
-    advanced::{graphics::core::Bytes, image::Handle}, alignment::Vertical, keyboard, widget::{
-        button, checkbox, column, container, image, pick_list, right, row, slider, space, text, text_input, Row
-    }, Alignment, Color, Element, Length, Padding, Subscription, Task, Theme
+    Alignment, Color, Element, Length, Subscription, Task, Theme,
+    advanced::{graphics::core::Bytes, image::Handle},
+    alignment::Vertical,
+    keyboard,
+    widget::{
+        Row, Tooltip, button, checkbox, column, container, image, pick_list, right, row, slider,
+        space, text, text_input, tooltip,
+    },
 };
 use lucide_icons::Icon;
 use memmap2::Mmap;
@@ -224,51 +229,70 @@ impl MemoryView {
                 .align_y(Vertical::Center)
         }
 
-        let mut offset_controls = controls(
+        let mut skip_line_left_button = button(icon(Icon::ChevronLeft));
+        if self.offset != 0 {
+            skip_line_left_button = skip_line_left_button.on_press(Message::OffsetChanged(
+                self.offset.saturating_sub(self.row_size()),
+            ));
+        }
+
+        let mut skip_line_right_button = button(icon(Icon::ChevronRight));
+        if self.offset != self.offset_max() {
+            skip_line_right_button = skip_line_right_button.on_press(Message::OffsetChanged(
+                self.offset.saturating_add(self.row_size()),
+            ));
+        }
+
+        let mut skip_whole_left_button = button(icon(Icon::ChevronsLeft));
+        if self.offset != 0 {
+            skip_whole_left_button = skip_whole_left_button.on_press(Message::OffsetChanged(
+                self.offset.saturating_sub(self.image_size()),
+            ));
+        }
+
+        let mut skip_whole_right_button = button(icon(Icon::ChevronsRight));
+        if self.offset != self.offset_max() {
+            skip_whole_right_button = skip_whole_right_button.on_press(Message::OffsetChanged(
+                self.offset.saturating_add(self.image_size()),
+            ));
+        }
+
+        fn tooltip_below<'a, Message>(
+            content: impl Into<Element<'a, Message>>,
+            msg: impl Into<Element<'a, Message>>,
+        ) -> Tooltip<'a, Message> {
+            tooltip(content.into(), msg, tooltip::Position::Bottom)
+                .delay(std::time::Duration::from_millis(500))
+        }
+
+        let skip_controls = row![
+            space::horizontal().width(Length::Fill),
+            tooltip_below(skip_whole_left_button, "Skip one image backward"),
+            tooltip_below(skip_line_left_button, "Skip one row backward"),
+            tooltip_below(skip_line_right_button, "Skip one row forward"),
+            tooltip_below(skip_whole_right_button, "Skip one image forward"),
+        ]
+        .spacing(5);
+
+        let offset_controls = controls(
             "offset",
             self.offset_range(),
             self.offset,
             Message::OffsetChanged,
         );
 
-        let mut skip_left_button = button(icon(Icon::ChevronLeft));
-        if self.offset != 0 {
-            skip_left_button = skip_left_button.on_press(Message::OffsetChanged(
-                self.offset.saturating_sub(self.image_size_bits()),
-            ));
-        }
-
-        let mut skip_right_button = button(icon(Icon::ChevronRight));
-        if self.offset != self.offset_max() {
-            skip_right_button = skip_right_button.on_press(Message::OffsetChanged(
-                self.offset.saturating_add(self.image_size_bits()),
-            ));
-        }
-
-        offset_controls = offset_controls
-            .push(skip_left_button)
-            .push(skip_right_button);
-
         let width_controls = controls(
             "width",
             self.width_range(),
             self.width,
             Message::WidthChanged,
-        )
-        .padding(Padding {
-            right: 80.0,
-            ..Padding::default()
-        });
+        );
         let height_controls = controls(
             "height",
             self.height_range(),
             self.height,
             Message::HeightChanged,
-        )
-        .padding(Padding {
-            right: 80.0,
-            ..Padding::default()
-        });
+        );
 
         let format_picker = pick_list(
             Some(self.pixel_format),
@@ -300,6 +324,7 @@ impl MemoryView {
         .align_y(Vertical::Center);
 
         let control_col = column![
+            skip_controls,
             offset_controls,
             width_controls,
             height_controls,
@@ -346,10 +371,22 @@ impl MemoryView {
         }
     }
 
-    fn image_size_bits(&self) -> usize {
-        (self.width as usize)
+    fn row_size(&self) -> usize {
+        let mut size = (self.width as usize).saturating_mul(self.pixel_format.size_bits());
+        if !self.pixel_format.is_bit_oriented() {
+            size /= 8
+        }
+        size
+    }
+
+    fn image_size(&self) -> usize {
+        let mut size = (self.width as usize)
             .saturating_mul(self.height as usize)
-            .saturating_mul(self.pixel_format.size_bits())
+            .saturating_mul(self.pixel_format.size_bits());
+        if !self.pixel_format.is_bit_oriented() {
+            size /= 8
+        }
+        size
     }
 
     fn offset_max(&self) -> usize {
@@ -357,11 +394,9 @@ impl MemoryView {
             self.buf
                 .len()
                 .saturating_mul(8)
-                .saturating_sub(self.image_size_bits())
+                .saturating_sub(self.image_size())
         } else {
-            self.buf
-                .len()
-                .saturating_sub(self.image_size_bits().div_ceil(8))
+            self.buf.len().saturating_sub(self.image_size().div_ceil(8))
         }
     }
 
